@@ -1,0 +1,16 @@
+[package]
+name = "minesweeper"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+authors = ["Filippo De Luca <me@filippodeluca.com.com>"]
+description = "Mini prototipo di Minesweeper in Rust con Macroquad"
+license = "Apache-2.0"
+repository = "https://github.com/filosganga/minesweeper.rs"
+keywords = ["rust", "game", "macroquad", "minesweeper"]
+categories = ["game-development", "2d"]
+
+[dependencies]
+env_logger = "0.11.8"
+log = "0.4.28"
+macroquad = { version = "0.4.14", features = ["audio", "quad-snd", "log", "log-rs", "backtrace"] }
