@@ -1,4 +1,4 @@
-use std::ops::{Index, IndexMut};
+use std::ops::Index;
 
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
@@ -31,16 +31,98 @@ fn tile_index(x: u8, y: u8, h_size: u8) -> usize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Tile {
+pub enum TileKind {
     Empty,
     Mine,
     Adjacent { no_of_mines: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileState {
+    Hidden,
+    Revealed,
+    Flagged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tile {
+    kind: TileKind,
+    state: TileState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GameStatus {
+    Won,
+    Lost,
+    Going,
+}
+
+impl Tile {
+    pub fn hidden_mine() -> Tile {
+        Tile {
+            kind: TileKind::Mine,
+            state: TileState::Hidden,
+        }
+    }
+
+    pub fn hidden_empty() -> Tile {
+        Tile {
+            kind: TileKind::Empty,
+            state: TileState::Hidden,
+        }
+    }
+
+    pub fn is_mine(&self) -> bool {
+        self.kind == TileKind::Mine
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kind == TileKind::Empty
+    }
+
+    pub fn is_adjacent(&self) -> bool {
+        matches!(self.kind, TileKind::Adjacent { .. })
+    }
+
+    pub fn no_of_adjacent_mine(&self) -> u8 {
+        match self.kind {
+            TileKind::Adjacent { no_of_mines } => no_of_mines,
+            _ => 0,
+        }
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.state == TileState::Hidden
+    }
+
+    pub fn is_revealed(&self) -> bool {
+        self.state == TileState::Revealed
+    }
+
+    pub fn is_flagged(&self) -> bool {
+        self.state == TileState::Flagged
+    }
+
+    pub fn toggle_flag(&mut self) {
+        if self.is_flagged() {
+            self.state = TileState::Hidden;
+        } else {
+            self.state = TileState::Flagged;
+        }
+    }
+
+    pub fn reveal(&mut self) {
+        // TODO perhaps return Result
+        if self.is_hidden() && !self.is_flagged() {
+            self.state = TileState::Revealed;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Minefield {
-    pub h_size: u8,
-    pub v_size: u8,
+    h_size: u8,
+    v_size: u8,
     tiles: Vec<Tile>,
 }
 
@@ -64,23 +146,23 @@ impl Minefield {
     }
 
     pub fn new(h_size: u8, v_size: u8, mine_indices: &[(u8, u8)]) -> Minefield {
-        let mut tiles = vec![Tile::Empty; h_size as usize * v_size as usize];
+        let mut tiles = vec![Tile::hidden_empty(); h_size as usize * v_size as usize];
         for &(x, y) in mine_indices {
-            tiles[tile_index(x, y, h_size)] = Tile::Mine
+            tiles[tile_index(x, y, h_size)] = Tile::hidden_mine()
         }
 
         for x in 0..h_size {
             for y in 0..v_size {
-                if tiles[tile_index(x, y, h_size)] != Tile::Mine {
+                if tiles[tile_index(x, y, h_size)].is_empty() {
                     let no_of_adjacent_mines = neighbors(x, y, h_size, v_size)
                         .map(|(neighbor_x, neighbor_y)| {
                             &tiles[tile_index(neighbor_x, neighbor_y, h_size)]
                         })
-                        .filter(|&tile| *tile == Tile::Mine)
+                        .filter(|&tile| tile.is_mine())
                         .count();
 
                     if no_of_adjacent_mines > 0 {
-                        tiles[tile_index(x, y, h_size)] = Tile::Adjacent {
+                        tiles[tile_index(x, y, h_size)].kind = TileKind::Adjacent {
                             no_of_mines: no_of_adjacent_mines as u8,
                         }
                     }
@@ -94,6 +176,43 @@ impl Minefield {
             tiles,
         }
     }
+
+    pub fn h_size(&self) -> u8 {
+        self.h_size
+    }
+
+    pub fn v_size(&self) -> u8 {
+        self.v_size
+    }
+
+    pub fn reveal(&mut self, x: u8, y: u8) {
+        let tile = &mut self.tiles[tile_index(x, y, self.h_size)];
+        if tile.is_hidden() {
+            tile.reveal();
+
+            if tile.is_empty() {
+                for (x, y) in neighbors(x, y, self.h_size, self.v_size) {
+                    self.reveal(x, y);
+                }
+            }
+        }
+    }
+
+    pub fn toggle_flag(&mut self, x: u8, y: u8) {
+        self.tiles[tile_index(x, y, self.h_size)].toggle_flag();
+    }
+
+    pub fn game_status(&self) -> GameStatus {
+        let mut status = GameStatus::Won;
+        for tile in &self.tiles {
+            if tile.is_mine() && tile.is_revealed() {
+                return GameStatus::Lost;
+            } else if !tile.is_mine() && tile.is_hidden() {
+                status = GameStatus::Going;
+            }
+        }
+        status
+    }
 }
 
 impl Index<(u8, u8)> for Minefield {
@@ -101,44 +220,6 @@ impl Index<(u8, u8)> for Minefield {
 
     fn index(&self, (x, y): (u8, u8)) -> &Self::Output {
         &self.tiles[tile_index(x, y, self.h_size)]
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TileState {
-    Hidden,
-    Revealed,
-    Flagged,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GameState {
-    pub minefield: Minefield,
-    tile_states: Vec<TileState>,
-}
-
-impl GameState {
-    pub fn new(minefield: Minefield) -> GameState {
-        let h_size = minefield.h_size as usize;
-        let v_size = minefield.v_size as usize;
-        GameState {
-            minefield,
-            tile_states: vec![TileState::Hidden; h_size * v_size],
-        }
-    }
-}
-
-impl Index<(u8, u8)> for GameState {
-    type Output = TileState;
-
-    fn index(&self, (x, y): (u8, u8)) -> &Self::Output {
-        &self.tile_states[tile_index(x, y, self.minefield.h_size)]
-    }
-}
-
-impl IndexMut<(u8, u8)> for GameState {
-    fn index_mut(&mut self, (x, y): (u8, u8)) -> &mut Self::Output {
-        &mut self.tile_states[tile_index(x, y, self.minefield.h_size)]
     }
 }
 
@@ -158,7 +239,7 @@ mod tests {
         let mines = [(0, 4), (4, 8), (8, 16)];
         let minefield = Minefield::new(16, 32, &mines);
         for mine in mines {
-            assert_eq!(minefield[mine], Tile::Mine);
+            assert_eq!(minefield[mine], Tile::hidden_mine());
         }
     }
 

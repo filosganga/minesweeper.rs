@@ -1,3 +1,6 @@
+use std::sync::LazyLock;
+
+use clap::Parser;
 use log::info;
 use macroquad::prelude::*;
 
@@ -7,13 +10,32 @@ use crate::domain::*;
 
 const SPRITES_BYTES: &[u8] = include_bytes!("assets/sprites.png");
 const FONT_SIZE: f32 = 64.0;
+const FONT_SIZE_XL: f32 = 80.0;
 const TILE_SIZE: u32 = 64;
+
+const TEXT_COLOR: Color = Color::from_rgba(74, 74, 74, 255);
+
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct Args {
+    #[arg(short = 'x', long, default_value_t = 8_u8)]
+    width: u8,
+
+    #[arg(short = 'y', long, default_value_t = 8_u8)]
+    height: u8,
+
+    #[arg(short, long, default_value = "0.15")]
+    density: f32,
+}
+
+static args: LazyLock<Args> = LazyLock::new(|| Args::parse());
 
 fn window_conf() -> Conf {
     Conf {
         window_title: "Minesweeper".to_owned(),
-        window_width: 16 * TILE_SIZE as i32,  // width in pixels
-        window_height: 16 * TILE_SIZE as i32, // height in pixels
+        window_width: args.width as i32 * TILE_SIZE as i32, // width in pixels
+        window_height: args.height as i32 * TILE_SIZE as i32, // height in pixels
+        window_resizable: false,
         ..Default::default()
     }
 }
@@ -44,7 +66,6 @@ fn screen_point_to_tile_index(point: Vec2) -> (u8, u8) {
 #[macroquad::main(window_conf)]
 async fn main() {
     env_logger::init();
-    info!("Avvio del gioco");
 
     let sprites = Image::from_file_with_format(SPRITES_BYTES, Some(ImageFormat::Png)).unwrap();
     let sprites_texture = Texture2D::from_image(&sprites);
@@ -60,27 +81,23 @@ async fn main() {
         TILE_SIZE as f32,
     );
 
-    let minefield = Minefield::random(16, 16, 0.2);
-    let mut game_state = GameState::new(minefield);
+    let mut minefield = Minefield::random(args.width, args.height, args.density);
 
     loop {
+        // TODO extract render_minefield
         clear_background(WHITE);
-
-        let mouse_pos: Vec2 = mouse_position().into();
-
-        for i in 0..game_state.minefield.h_size {
-            for j in 0..game_state.minefield.v_size {
-                let tile = &game_state.minefield[(i, j)];
-                let tile_state = &game_state[(i, j)];
+        for i in 0..minefield.h_size() {
+            for j in 0..minefield.v_size() {
+                let tile = &minefield[(i, j)];
 
                 let x = i as f32 * TILE_SIZE as f32;
                 let y = j as f32 * TILE_SIZE as f32;
 
-                let rect = if *tile_state == TileState::Hidden {
+                let rect = if tile.is_hidden() {
                     hidden_rect
-                } else if *tile_state == TileState::Flagged {
+                } else if tile.is_flagged() {
                     flag_rect
-                } else if *tile == Tile::Mine {
+                } else if tile.is_mine() {
                     mine_rect
                 } else {
                     empty_rect
@@ -98,46 +115,58 @@ async fn main() {
                     },
                 );
 
-                if *tile_state == TileState::Revealed {
-                    if let Tile::Adjacent { no_of_mines } = *tile {
-                        draw_text_centered(
-                            &format!("{}", no_of_mines),
-                            x,
-                            y,
-                            TILE_SIZE as f32,
-                            TILE_SIZE as f32,
-                            FONT_SIZE,
-                            Color::from_rgba(74, 74, 74, 255),
-                        )
+                if tile.is_revealed() && tile.is_adjacent() {
+                    draw_text_centered(
+                        &format!("{}", tile.no_of_adjacent_mine()),
+                        x,
+                        y,
+                        TILE_SIZE as f32,
+                        TILE_SIZE as f32,
+                        FONT_SIZE,
+                        TEXT_COLOR,
+                    )
+                }
+            }
+        }
+
+        match minefield.game_status() {
+            GameStatus::Lost => draw_text_centered(
+                "YOU LOST!",
+                0.0,
+                0.0,
+                screen_width(),
+                screen_width(),
+                FONT_SIZE_XL,
+                RED,
+            ),
+            GameStatus::Won => draw_text_centered(
+                "YOU WON!",
+                0.0,
+                0.0,
+                screen_width(),
+                screen_width(),
+                FONT_SIZE_XL,
+                RED,
+            ),
+            GameStatus::Going => {
+                if is_mouse_button_pressed(MouseButton::Right) {
+                    let mouse_pos: Vec2 = mouse_position().into();
+                    let (tile_x, tile_y) = screen_point_to_tile_index(mouse_pos);
+                    if tile_x < minefield.h_size() && tile_y < minefield.v_size() {
+                        minefield.toggle_flag(tile_x, tile_y);
+                    }
+                }
+
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let mouse_pos: Vec2 = mouse_position().into();
+                    let (tile_x, tile_y) = screen_point_to_tile_index(mouse_pos);
+                    if tile_x < minefield.h_size() && tile_y < minefield.v_size() {
+                        minefield.reveal(tile_x, tile_y);
                     }
                 }
             }
         }
 
-        if is_mouse_button_pressed(MouseButton::Right) {
-            let (tile_x, tile_y) = screen_point_to_tile_index(mouse_pos);
-
-            if tile_x < game_state.minefield.h_size && tile_y < game_state.minefield.v_size {
-                let tile_state = &mut game_state[(tile_x, tile_y)];
-                if *tile_state == TileState::Flagged {
-                    *tile_state = TileState::Hidden;
-                } else if *tile_state == TileState::Hidden {
-                    *tile_state = TileState::Flagged;
-                }
-            }
-        }
-
-        if is_mouse_button_pressed(MouseButton::Left) {
-            let (tile_x, tile_y) = screen_point_to_tile_index(mouse_pos);
-
-            if tile_x < game_state.minefield.h_size && tile_y < game_state.minefield.v_size {
-                let tile_state = &mut game_state[(tile_x, tile_y)];
-                if *tile_state == TileState::Hidden {
-                    *tile_state = TileState::Revealed;
-                }
-            }
-        }
-
-        next_frame().await; // aggiorna lo schermo
+        next_frame().await;
     }
 }
